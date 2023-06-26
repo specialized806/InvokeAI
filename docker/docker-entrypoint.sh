@@ -31,7 +31,7 @@ configure() {
     else
         mkdir -p ${INVOKEAI_ROOT}
         chown --recursive ${USER} ${INVOKEAI_ROOT}
-        gosu ${USER} invokeai-configure --yes
+        gosu ${USER} invokeai-configure --yes --default_only
     fi
 }
 
