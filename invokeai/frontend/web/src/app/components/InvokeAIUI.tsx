@@ -7,7 +7,6 @@ import React, {
 } from 'react';
 import { Provider } from 'react-redux';
 import { store } from 'app/store/store';
-// import { OpenAPI } from 'services/api/types';
 
 import Loading from '../../common/components/Loading/Loading';
 import { addMiddleware, resetMiddlewares } from 'redux-dynamic-middlewares';
@@ -17,13 +16,9 @@ import '../../i18n';
 import { socketMiddleware } from 'services/events/middleware';
 import { Middleware } from '@reduxjs/toolkit';
 import ImageDndContext from './ImageDnd/ImageDndContext';
-import {
-  DeleteImageContext,
-  DeleteImageContextProvider,
-} from 'app/contexts/DeleteImageContext';
-import UpdateImageBoardModal from '../../features/gallery/components/Boards/UpdateImageBoardModal';
 import { AddImageToBoardContextProvider } from '../contexts/AddImageToBoardContext';
 import { $authToken, $baseUrl } from 'services/api/client';
+import { DeleteBoardImagesContextProvider } from '../contexts/DeleteBoardImagesContext';
 
 const App = lazy(() => import('./App'));
 const ThemeLocaleProvider = lazy(() => import('./ThemeLocaleProvider'));
@@ -33,7 +28,6 @@ interface Props extends PropsWithChildren {
   token?: string;
   config?: PartialAppConfig;
   headerComponent?: ReactNode;
-  setIsReady?: (isReady: boolean) => void;
   middleware?: Middleware[];
 }
 
@@ -42,7 +36,6 @@ const InvokeAIUI = ({
   token,
   config,
   headerComponent,
-  setIsReady,
   middleware,
 }: Props) => {
   useEffect(() => {
@@ -84,15 +77,11 @@ const InvokeAIUI = ({
         <React.Suspense fallback={<Loading />}>
           <ThemeLocaleProvider>
             <ImageDndContext>
-              <DeleteImageContextProvider>
-                <AddImageToBoardContextProvider>
-                  <App
-                    config={config}
-                    headerComponent={headerComponent}
-                    setIsReady={setIsReady}
-                  />
-                </AddImageToBoardContextProvider>
-              </DeleteImageContextProvider>
+              <AddImageToBoardContextProvider>
+                <DeleteBoardImagesContextProvider>
+                  <App config={config} headerComponent={headerComponent} />
+                </DeleteBoardImagesContextProvider>
+              </AddImageToBoardContextProvider>
             </ImageDndContext>
           </ThemeLocaleProvider>
         </React.Suspense>

@@ -72,7 +72,6 @@ import { addCommitStagingAreaImageListener } from './listeners/addCommitStagingA
 import { addImageCategoriesChangedListener } from './listeners/imageCategoriesChanged';
 import { addControlNetImageProcessedListener } from './listeners/controlNetImageProcessed';
 import { addControlNetAutoProcessListener } from './listeners/controlNetAutoProcess';
-import { addUpdateImageUrlsOnConnectListener } from './listeners/updateImageUrlsOnConnect';
 import {
   addImageAddedToBoardFulfilledListener,
   addImageAddedToBoardRejectedListener,
@@ -83,6 +82,10 @@ import {
   addImageRemovedFromBoardRejectedListener,
 } from './listeners/imageRemovedFromBoard';
 import { addReceivedOpenAPISchemaListener } from './listeners/receivedOpenAPISchema';
+import { addRequestedBoardImageDeletionListener } from './listeners/boardImagesDeleted';
+import { addSelectionAddedToBatchListener } from './listeners/selectionAddedToBatch';
+import { addImageDroppedListener } from './listeners/imageDropped';
+import { addImageToDeleteSelectedListener } from './listeners/imageToDeleteSelected';
 
 export const listenerMiddleware = createListenerMiddleware();
 
@@ -124,6 +127,8 @@ addRequestedImageDeletionListener();
 addImageDeletedPendingListener();
 addImageDeletedFulfilledListener();
 addImageDeletedRejectedListener();
+addRequestedBoardImageDeletionListener();
+addImageToDeleteSelectedListener();
 
 // Image metadata
 addImageMetadataReceivedFulfilledListener();
@@ -209,3 +214,9 @@ addBoardIdSelectedListener();
 
 // Node schemas
 addReceivedOpenAPISchemaListener();
+
+// Batches
+addSelectionAddedToBatchListener();
+
+// DND
+addImageDroppedListener();
