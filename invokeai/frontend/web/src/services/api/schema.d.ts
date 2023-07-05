@@ -145,6 +145,13 @@ export type paths = {
      */
     get: operations["get_image_urls"];
   };
+  "/api/v1/images/delete": {
+    /**
+     * Delete Many Images 
+     * @description Deletes many images
+     */
+    post: operations["delete_many_images"];
+  };
   "/api/v1/boards/": {
     /**
      * List Boards 
@@ -192,6 +199,13 @@ export type paths = {
      * @description Gets a list of images for a board
      */
     get: operations["list_board_images"];
+  };
+  "/api/v1/board_images/{board_id}/images": {
+    /**
+     * Create Multiple Board Images 
+     * @description Add many images to a board
+     */
+    patch: operations["create_multiple_board_images"];
   };
 };
 
@@ -825,6 +839,17 @@ export type components = {
        * @description The mask to use when inpainting
        */
       mask?: components["schemas"]["ImageField"];
+    };
+    /**
+     * DeleteManyImagesResult 
+     * @description The result of a delete many image operation.
+     */
+    DeleteManyImagesResult: {
+      /**
+       * Deleted Images 
+       * @description The names of the images that were successfully deleted
+       */
+      deleted_images: (string)[];
     };
     /** DiffusersModelInfo */
     DiffusersModelInfo: {
@@ -4462,17 +4487,17 @@ export type components = {
       image?: components["schemas"]["ImageField"];
     };
     /**
-     * StableDiffusion1ModelFormat 
-     * @description An enumeration. 
-     * @enum {string}
-     */
-    StableDiffusion1ModelFormat: "checkpoint" | "diffusers";
-    /**
      * StableDiffusion2ModelFormat 
      * @description An enumeration. 
      * @enum {string}
      */
     StableDiffusion2ModelFormat: "checkpoint" | "diffusers";
+    /**
+     * StableDiffusion1ModelFormat 
+     * @description An enumeration. 
+     * @enum {string}
+     */
+    StableDiffusion1ModelFormat: "checkpoint" | "diffusers";
   };
   responses: never;
   parameters: never;
@@ -5162,6 +5187,31 @@ export type operations = {
     };
   };
   /**
+   * Delete Many Images 
+   * @description Deletes many images
+   */
+  delete_many_images: {
+    requestBody: {
+      content: {
+        "application/json": (string)[];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DeleteManyImagesResult"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  /**
    * List Boards 
    * @description Gets a list of boards
    */
@@ -5378,6 +5428,39 @@ export type operations = {
           "application/json": components["schemas"]["OffsetPaginatedResults_ImageDTO_"];
         };
       };
+      /** @description Validation Error */
+      422: {
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  /**
+   * Create Multiple Board Images 
+   * @description Add many images to a board
+   */
+  create_multiple_board_images: {
+    parameters: {
+      path: {
+        /** @description The id of the board */
+        board_id: string;
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": (string)[];
+      };
+    };
+    responses: {
+      /** @description The images were added to the board successfully */
+      201: {
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Some images were added to the board successfully, but others failed */
+      207: never;
       /** @description Validation Error */
       422: {
         content: {
