@@ -207,6 +207,13 @@ export type paths = {
      */
     patch: operations["create_multiple_board_images"];
   };
+  "/api/v1/board_images/images": {
+    /**
+     * Delete Multiple Board Images 
+     * @description Remove many images from their boards, if they have one
+     */
+    post: operations["delete_multiple_board_images"];
+  };
 };
 
 export type webhooks = Record<string, never>;
@@ -335,19 +342,6 @@ export type components = {
       /**
        * Image Name 
        * @description The name of the image to add
-       */
-      image_name: string;
-    };
-    /** Body_remove_board_image */
-    Body_remove_board_image: {
-      /**
-       * Board Id 
-       * @description The id of the board
-       */
-      board_id: string;
-      /**
-       * Image Name 
-       * @description The name of the image to remove
        */
       image_name: string;
     };
@@ -3153,7 +3147,7 @@ export type components = {
     /** ModelsList */
     ModelsList: {
       /** Models */
-      models: (components["schemas"]["StableDiffusion1ModelDiffusersConfig"] | components["schemas"]["StableDiffusion1ModelCheckpointConfig"] | components["schemas"]["VaeModelConfig"] | components["schemas"]["LoRAModelConfig"] | components["schemas"]["ControlNetModelConfig"] | components["schemas"]["TextualInversionModelConfig"] | components["schemas"]["StableDiffusion2ModelDiffusersConfig"] | components["schemas"]["StableDiffusion2ModelCheckpointConfig"])[];
+      models: (components["schemas"]["StableDiffusion1ModelCheckpointConfig"] | components["schemas"]["StableDiffusion1ModelDiffusersConfig"] | components["schemas"]["VaeModelConfig"] | components["schemas"]["LoRAModelConfig"] | components["schemas"]["ControlNetModelConfig"] | components["schemas"]["TextualInversionModelConfig"] | components["schemas"]["StableDiffusion2ModelDiffusersConfig"] | components["schemas"]["StableDiffusion2ModelCheckpointConfig"])[];
     };
     /**
      * MultiplyInvocation 
@@ -4487,17 +4481,17 @@ export type components = {
       image?: components["schemas"]["ImageField"];
     };
     /**
-     * StableDiffusion2ModelFormat 
-     * @description An enumeration. 
-     * @enum {string}
-     */
-    StableDiffusion2ModelFormat: "checkpoint" | "diffusers";
-    /**
      * StableDiffusion1ModelFormat 
      * @description An enumeration. 
      * @enum {string}
      */
     StableDiffusion1ModelFormat: "checkpoint" | "diffusers";
+    /**
+     * StableDiffusion2ModelFormat 
+     * @description An enumeration. 
+     * @enum {string}
+     */
+    StableDiffusion2ModelFormat: "checkpoint" | "diffusers";
   };
   responses: never;
   parameters: never;
@@ -5386,7 +5380,7 @@ export type operations = {
   remove_board_image: {
     requestBody: {
       content: {
-        "application/json": components["schemas"]["Body_remove_board_image"];
+        "application/json": string;
       };
     };
     responses: {
@@ -5459,8 +5453,31 @@ export type operations = {
           "application/json": unknown;
         };
       };
-      /** @description Some images were added to the board successfully, but others failed */
-      207: never;
+      /** @description Validation Error */
+      422: {
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  /**
+   * Delete Multiple Board Images 
+   * @description Remove many images from their boards, if they have one
+   */
+  delete_multiple_board_images: {
+    requestBody: {
+      content: {
+        "application/json": (string)[];
+      };
+    };
+    responses: {
+      /** @description The images were removed from their boards successfully */
+      201: {
+        content: {
+          "application/json": unknown;
+        };
+      };
       /** @description Validation Error */
       422: {
         content: {
