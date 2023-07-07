@@ -1,15 +1,16 @@
 import { Tooltip, useColorMode, useToken } from '@chakra-ui/react';
 import { MultiSelect, MultiSelectProps } from '@mantine/core';
 import { useChakraThemeTokens } from 'common/hooks/useChakraThemeTokens';
-import { memo } from 'react';
+import { RefObject, memo } from 'react';
 import { mode } from 'theme/util/mode';
 
 type IAIMultiSelectProps = MultiSelectProps & {
   tooltip?: string;
+  inputRef?: RefObject<HTMLInputElement>;
 };
 
 const IAIMantineMultiSelect = (props: IAIMultiSelectProps) => {
-  const { searchable = true, tooltip, ...rest } = props;
+  const { searchable = true, tooltip, inputRef, ...rest } = props;
   const {
     base50,
     base100,
@@ -31,8 +32,9 @@ const IAIMantineMultiSelect = (props: IAIMultiSelectProps) => {
   const { colorMode } = useColorMode();
 
   return (
-    <Tooltip label={tooltip} placement="top" hasArrow>
+    <Tooltip label={tooltip} placement="top" hasArrow isOpen={true}>
       <MultiSelect
+        ref={inputRef}
         searchable={searchable}
         styles={() => ({
           label: {
@@ -64,6 +66,7 @@ const IAIMantineMultiSelect = (props: IAIMultiSelectProps) => {
             '&[data-disabled]': {
               backgroundColor: mode(base300, base700)(colorMode),
               color: mode(base600, base400)(colorMode),
+              cursor: 'not-allowed',
             },
           },
           value: {
@@ -105,6 +108,10 @@ const IAIMantineMultiSelect = (props: IAIMultiSelectProps) => {
                 backgroundColor: mode(accent500, accent500)(colorMode),
                 color: mode('white', base50)(colorMode),
               },
+            },
+            '&[data-disabled]': {
+              color: mode(base500, base600)(colorMode),
+              cursor: 'not-allowed',
             },
           },
           rightSection: {
