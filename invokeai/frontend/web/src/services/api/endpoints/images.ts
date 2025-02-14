@@ -1,782 +1,536 @@
-import { EntityState, createEntityAdapter } from '@reduxjs/toolkit';
-import { PatchCollection } from '@reduxjs/toolkit/dist/query/core/buildThunks';
-import { dateComparator } from 'common/util/dateComparator';
-import {
-  ASSETS_CATEGORIES,
-  BoardId,
-  IMAGE_CATEGORIES,
-} from 'features/gallery/store/types';
-import queryString from 'query-string';
-import { ApiFullTagDescription, api } from '..';
-import { components, paths } from '../schema';
-import {
-  ImageCategory,
+import type { StartQueryActionCreatorOptions } from '@reduxjs/toolkit/dist/query/core/buildInitiate';
+import { $authToken } from 'app/store/nanostores/authToken';
+import { getStore } from 'app/store/nanostores/store';
+import type { BoardId } from 'features/gallery/store/types';
+import { ASSETS_CATEGORIES, IMAGE_CATEGORIES } from 'features/gallery/store/types';
+import type { components, paths } from 'services/api/schema';
+import type {
+  DeleteBoardResult,
+  GraphAndWorkflowResponse,
   ImageDTO,
-  OffsetPaginatedResults_ImageDTO_,
-  PostUploadAction,
-} from '../types';
+  ListImagesArgs,
+  ListImagesResponse,
+  UploadImageArg,
+} from 'services/api/types';
+import { getCategories, getListImagesUrl } from 'services/api/util';
+import type { JsonObject } from 'type-fest';
 
-const getIsImageInDateRange = (
-  data: ImageCache | undefined,
-  imageDTO: ImageDTO
-) => {
-  if (!data) {
-    return false;
-  }
-  const cacheImageDTOS = imagesSelectors.selectAll(data);
-
-  if (cacheImageDTOS.length > 1) {
-    // Images are sorted by `created_at` DESC
-    // check if the image is newer than the oldest image in the cache
-    const createdDate = new Date(imageDTO.created_at);
-    const oldestDate = new Date(
-      cacheImageDTOS[cacheImageDTOS.length - 1].created_at
-    );
-    return createdDate >= oldestDate;
-  } else if ([0, 1].includes(cacheImageDTOS.length)) {
-    // if there are only 1 or 0 images in the cache, we consider the image to be in the date range
-    return true;
-  }
-  return false;
-};
-
-const getCategories = (imageDTO: ImageDTO) => {
-  if (IMAGE_CATEGORIES.includes(imageDTO.image_category)) {
-    return IMAGE_CATEGORIES;
-  }
-  return ASSETS_CATEGORIES;
-};
-
-export type ListImagesArgs = NonNullable<
-  paths['/api/v1/images/']['get']['parameters']['query']
->;
+import type { ApiTagDescription } from '..';
+import { api, buildV1Url, LIST_TAG } from '..';
+import { buildBoardsUrl } from './boards';
 
 /**
- * This is an unsafe type; the object inside is not guaranteed to be valid.
+ * Builds an endpoint URL for the images router
+ * @example
+ * buildImagesUrl('some-path')
+ * // '/api/v1/images/some-path'
  */
-export type UnsafeImageMetadata = {
-  metadata: components['schemas']['CoreMetadata'];
-  graph: NonNullable<components['schemas']['Graph']>;
-};
+const buildImagesUrl = (path: string = '') => buildV1Url(`images/${path}`);
 
-export type ImageCache = EntityState<ImageDTO> & { total: number };
-
-// The adapter is not actually the data store - it just provides helper functions to interact
-// with some other store of data. We will use the RTK Query cache as that store.
-export const imagesAdapter = createEntityAdapter<ImageDTO>({
-  selectId: (image) => image.image_name,
-  sortComparer: (a, b) => dateComparator(b.updated_at, a.updated_at),
-});
-
-// We want to also store the images total in the cache. When we initialize the cache state,
-// we will provide this type arg so the adapter knows we want the total.
-export type AdditionalImagesAdapterState = { total: number };
-
-// Create selectors for the adapter.
-export const imagesSelectors = imagesAdapter.getSelectors();
-
-// Helper to create the url for the listImages endpoint. Also we use it to create the cache key.
-export const getListImagesUrl = (queryArgs: ListImagesArgs) =>
-  `images/?${queryString.stringify(queryArgs, { arrayFormat: 'none' })}`;
+/**
+ * Builds an endpoint URL for the board_images router
+ * @example
+ * buildBoardImagesUrl('some-path')
+ * // '/api/v1/board_images/some-path'
+ */
+const buildBoardImagesUrl = (path: string = '') => buildV1Url(`board_images/${path}`);
 
 export const imagesApi = api.injectEndpoints({
   endpoints: (build) => ({
     /**
      * Image Queries
      */
-    listImages: build.query<
-      EntityState<ImageDTO> & { total: number },
-      ListImagesArgs
-    >({
+    listImages: build.query<ListImagesResponse, ListImagesArgs>({
       query: (queryArgs) => ({
         // Use the helper to create the URL.
         url: getListImagesUrl(queryArgs),
         method: 'GET',
       }),
-      providesTags: (result, error, { board_id, categories }) => [
-        // Make the tags the same as the cache key
-        { type: 'ImageList', id: getListImagesUrl({ board_id, categories }) },
-      ],
-      serializeQueryArgs: ({ queryArgs }) => {
-        // Create cache & key based on board_id and categories - skip the other args.
-        // Offset is the size of the cache, and limit is always the same. Both are provided by
-        // the consumer of the query.
-        const { board_id, categories } = queryArgs;
-
-        // Just use the same fn used to create the url; it makes an understandable cache key.
-        // This cache key is the same for any combo of board_id and categories, doesn't change
-        // when offset & limit change.
-        const cacheKey = getListImagesUrl({ board_id, categories });
-        return cacheKey;
+      providesTags: (result, error, { board_id, categories }) => {
+        return [
+          // Make the tags the same as the cache key
+          { type: 'ImageList', id: getListImagesUrl({ board_id, categories }) },
+          'FetchOnReconnect',
+        ];
       },
-      transformResponse(response: OffsetPaginatedResults_ImageDTO_) {
-        const { total, items: images } = response;
-        // Use the adapter to convert the response to the right shape, and adding the new total.
-        // The trick is to just provide an empty state and add the images array to it. This returns
-        // a properly shaped EntityState.
-        return imagesAdapter.addMany(
-          imagesAdapter.getInitialState<AdditionalImagesAdapterState>({
-            total,
-          }),
-          images
-        );
+      onQueryStarted(_, { dispatch, queryFulfilled }) {
+        // Populate the getImageDTO cache with these images. This makes image selection smoother, because it doesn't
+        // need to re-fetch image data when the user selects an image. The getImageDTO cache keeps data for the default
+        // of 60s, so this data won't stick around too long.
+        queryFulfilled.then(({ data }) => {
+          for (const imageDTO of data.items) {
+            dispatch(imagesApi.util.upsertQueryData('getImageDTO', imageDTO.image_name, imageDTO));
+          }
+        });
       },
-      merge: (cache, response) => {
-        // Here we actually update the cache. `response` here is the output of `transformResponse`
-        // above. In a similar vein to `transformResponse`, we can use the imagesAdapter to get
-        // things in the right shape. Also update the total image count.
-        imagesAdapter.addMany(cache, imagesSelectors.selectAll(response));
-        cache.total = response.total;
-      },
-      forceRefetch({ currentArg, previousArg }) {
-        // Refetch when the offset changes (which means we are on a new page).
-        return currentArg?.offset !== previousArg?.offset;
-      },
-      async onQueryStarted(_, { dispatch, queryFulfilled }) {
-        try {
-          const { data } = await queryFulfilled;
-
-          // update the `getImageDTO` cache for each image
-          imagesSelectors.selectAll(data).forEach((imageDTO) => {
-            dispatch(
-              imagesApi.util.upsertQueryData(
-                'getImageDTO',
-                imageDTO.image_name,
-                imageDTO
-              )
-            );
-          });
-        } catch {
-          // no-op
-        }
-      },
-      // 24 hours - reducing this to a few minutes would reduce memory usage.
-      keepUnusedDataFor: 86400,
     }),
     getIntermediatesCount: build.query<number, void>({
-      query: () => ({ url: getListImagesUrl({ is_intermediate: true }) }),
-      providesTags: ['IntermediatesCount'],
-      transformResponse: (response: OffsetPaginatedResults_ImageDTO_) => {
-        return response.total;
-      },
-    }),
-    getImageDTO: build.query<ImageDTO, string>({
-      query: (image_name) => ({ url: `images/${image_name}` }),
-      providesTags: (result, error, arg) => {
-        const tags: ApiFullTagDescription[] = [{ type: 'Image', id: arg }];
-        if (result?.board_id) {
-          tags.push({ type: 'Board', id: result.board_id });
-        }
-        return tags;
-      },
-      keepUnusedDataFor: 86400, // 24 hours
-    }),
-    getImageMetadata: build.query<UnsafeImageMetadata, string>({
-      query: (image_name) => ({ url: `images/${image_name}/metadata` }),
-      providesTags: (result, error, arg) => {
-        const tags: ApiFullTagDescription[] = [
-          { type: 'ImageMetadata', id: arg },
-        ];
-        return tags;
-      },
-      keepUnusedDataFor: 86400, // 24 hours
-    }),
-    getBoardImagesTotal: build.query<number, string | undefined>({
-      query: (board_id) => ({
-        url: getListImagesUrl({
-          board_id: board_id ?? 'none',
-          categories: IMAGE_CATEGORIES,
-          is_intermediate: false,
-          limit: 0,
-          offset: 0,
-        }),
-        method: 'GET',
-      }),
-      providesTags: (result, error, arg) => [
-        { type: 'BoardImagesTotal', id: arg ?? 'none' },
-      ],
-      transformResponse: (response: OffsetPaginatedResults_ImageDTO_) => {
-        return response.total;
-      },
-    }),
-    getBoardAssetsTotal: build.query<number, string | undefined>({
-      query: (board_id) => ({
-        url: getListImagesUrl({
-          board_id: board_id ?? 'none',
-          categories: ASSETS_CATEGORIES,
-          is_intermediate: false,
-          limit: 0,
-          offset: 0,
-        }),
-        method: 'GET',
-      }),
-      providesTags: (result, error, arg) => [
-        { type: 'BoardAssetsTotal', id: arg ?? 'none' },
-      ],
-      transformResponse: (response: OffsetPaginatedResults_ImageDTO_) => {
-        return response.total;
-      },
+      query: () => ({ url: buildImagesUrl('intermediates') }),
+      providesTags: ['IntermediatesCount', 'FetchOnReconnect'],
     }),
     clearIntermediates: build.mutation<number, void>({
-      query: () => ({ url: `images/clear-intermediates`, method: 'POST' }),
-      invalidatesTags: ['IntermediatesCount'],
+      query: () => ({ url: buildImagesUrl('intermediates'), method: 'DELETE' }),
+      invalidatesTags: ['IntermediatesCount', 'InvocationCacheStatus'],
+    }),
+    getImageDTO: build.query<ImageDTO, string>({
+      query: (image_name) => ({ url: buildImagesUrl(`i/${image_name}`) }),
+      providesTags: (result, error, image_name) => [{ type: 'Image', id: image_name }],
+    }),
+    getImageMetadata: build.query<JsonObject | undefined, string>({
+      query: (image_name) => ({ url: buildImagesUrl(`i/${image_name}/metadata`) }),
+      providesTags: (result, error, image_name) => [{ type: 'ImageMetadata', id: image_name }],
+    }),
+    getImageWorkflow: build.query<GraphAndWorkflowResponse, string>({
+      query: (image_name) => ({ url: buildImagesUrl(`i/${image_name}/workflow`) }),
+      providesTags: (result, error, image_name) => [{ type: 'ImageWorkflow', id: image_name }],
     }),
     deleteImage: build.mutation<void, ImageDTO>({
       query: ({ image_name }) => ({
-        url: `images/${image_name}`,
+        url: buildImagesUrl(`i/${image_name}`),
         method: 'DELETE',
       }),
-      invalidatesTags: (result, error, { board_id }) => [
-        { type: 'BoardImagesTotal', id: board_id ?? 'none' },
-        { type: 'BoardAssetsTotal', id: board_id ?? 'none' },
-      ],
-      async onQueryStarted(imageDTO, { dispatch, queryFulfilled }) {
-        /**
-         * Cache changes for `deleteImage`:
-         * - NOT POSSIBLE: *remove* from getImageDTO
-         * - $cache = [board_id|no_board]/[images|assets]
-         * - *remove* from $cache
-         */
-
-        const { image_name, board_id } = imageDTO;
-
-        // Store patches so we can undo if the query fails
-        const patches: PatchCollection[] = [];
-
-        // determine `categories`, i.e. do we update "All Images" or "All Assets"
-        // $cache = [board_id|no_board]/[images|assets]
+      invalidatesTags: (result, error, imageDTO) => {
         const categories = getCategories(imageDTO);
+        const boardId = imageDTO.board_id ?? 'none';
 
-        // *remove* from $cache
-        patches.push(
-          dispatch(
-            imagesApi.util.updateQueryData(
-              'listImages',
-              { board_id: board_id ?? 'none', categories },
-              (draft) => {
-                const oldTotal = draft.total;
-                const newState = imagesAdapter.removeOne(draft, image_name);
-                const delta = newState.total - oldTotal;
-                draft.total = draft.total + delta;
-              }
-            )
-          )
-        );
+        return [
+          {
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: boardId,
+              categories,
+            }),
+          },
+          {
+            type: 'Board',
+            id: boardId,
+          },
+          {
+            type: 'BoardImagesTotal',
+            id: boardId,
+          },
+        ];
+      },
+    }),
 
-        try {
-          await queryFulfilled;
-        } catch {
-          patches.forEach((patchResult) => patchResult.undo());
+    deleteImages: build.mutation<components['schemas']['DeleteImagesFromListResult'], { imageDTOs: ImageDTO[] }>({
+      query: ({ imageDTOs }) => {
+        const image_names = imageDTOs.map((imageDTO) => imageDTO.image_name);
+        return {
+          url: buildImagesUrl('delete'),
+          method: 'POST',
+          body: {
+            image_names,
+          },
+        };
+      },
+      invalidatesTags: (result, error, { imageDTOs }) => {
+        if (imageDTOs[0]) {
+          const categories = getCategories(imageDTOs[0]);
+          const boardId = imageDTOs[0].board_id ?? 'none';
+
+          const tags: ApiTagDescription[] = [
+            {
+              type: 'ImageList',
+              id: getListImagesUrl({
+                board_id: boardId,
+                categories,
+              }),
+            },
+            {
+              type: 'Board',
+              id: boardId,
+            },
+            {
+              type: 'BoardImagesTotal',
+              id: boardId,
+            },
+          ];
+
+          return tags;
         }
+        return [];
       },
     }),
     /**
      * Change an image's `is_intermediate` property.
      */
-    changeImageIsIntermediate: build.mutation<
-      ImageDTO,
-      { imageDTO: ImageDTO; is_intermediate: boolean }
-    >({
+    changeImageIsIntermediate: build.mutation<ImageDTO, { imageDTO: ImageDTO; is_intermediate: boolean }>({
       query: ({ imageDTO, is_intermediate }) => ({
-        url: `images/${imageDTO.image_name}`,
+        url: buildImagesUrl(`i/${imageDTO.image_name}`),
         method: 'PATCH',
         body: { is_intermediate },
       }),
-      invalidatesTags: (result, error, { imageDTO }) => [
-        { type: 'BoardImagesTotal', id: imageDTO.board_id ?? 'none' },
-        { type: 'BoardAssetsTotal', id: imageDTO.board_id ?? 'none' },
-      ],
-      async onQueryStarted(
-        { imageDTO, is_intermediate },
-        { dispatch, queryFulfilled, getState }
-      ) {
-        /**
-         * Cache changes for `changeImageIsIntermediate`:
-         * - *update* getImageDTO
-         * - $cache = [board_id|no_board]/[images|assets]
-         * - IF it is being changed to an intermediate:
-         *    - remove from $cache
-         * - ELSE (it is being changed to a non-intermediate):
-         *    - IF it eligible for insertion into existing $cache:
-         *      - *upsert* to $cache
-         */
-
-        // Store patches so we can undo if the query fails
-        const patches: PatchCollection[] = [];
-
-        // *update* getImageDTO
-        patches.push(
-          dispatch(
-            imagesApi.util.updateQueryData(
-              'getImageDTO',
-              imageDTO.image_name,
-              (draft) => {
-                Object.assign(draft, { is_intermediate });
-              }
-            )
-          )
-        );
-
-        // $cache = [board_id|no_board]/[images|assets]
+      invalidatesTags: (result, error, { imageDTO }) => {
         const categories = getCategories(imageDTO);
+        const boardId = imageDTO.board_id ?? 'none';
 
-        if (is_intermediate) {
-          // IF it is being changed to an intermediate:
-          // remove from $cache
-          patches.push(
-            dispatch(
-              imagesApi.util.updateQueryData(
-                'listImages',
-                { board_id: imageDTO.board_id ?? 'none', categories },
-                (draft) => {
-                  const oldTotal = draft.total;
-                  const newState = imagesAdapter.removeOne(
-                    draft,
-                    imageDTO.image_name
-                  );
-                  const delta = newState.total - oldTotal;
-                  draft.total = draft.total + delta;
-                }
-              )
-            )
-          );
-        } else {
-          // ELSE (it is being changed to a non-intermediate):
-          console.log(imageDTO);
-          const queryArgs = {
-            board_id: imageDTO.board_id ?? 'none',
-            categories,
-          };
-
-          const currentCache = imagesApi.endpoints.listImages.select(queryArgs)(
-            getState()
-          );
-
-          // IF it eligible for insertion into existing $cache
-          // "eligible" means either:
-          // - The cache is fully populated, with all images in the db cached
-          //    OR
-          // - The image's `created_at` is within the range of the cached images
-
-          const isCacheFullyPopulated =
-            currentCache.data &&
-            currentCache.data.ids.length >= currentCache.data.total;
-
-          const isInDateRange = getIsImageInDateRange(
-            currentCache.data,
-            imageDTO
-          );
-
-          if (isCacheFullyPopulated || isInDateRange) {
-            // *upsert* to $cache
-            patches.push(
-              dispatch(
-                imagesApi.util.updateQueryData(
-                  'listImages',
-                  queryArgs,
-                  (draft) => {
-                    const oldTotal = draft.total;
-                    const newState = imagesAdapter.upsertOne(draft, imageDTO);
-                    const delta = newState.total - oldTotal;
-                    draft.total = draft.total + delta;
-                  }
-                )
-              )
-            );
-          }
-        }
-
-        try {
-          await queryFulfilled;
-        } catch {
-          patches.forEach((patchResult) => patchResult.undo());
-        }
+        return [
+          { type: 'Image', id: imageDTO.image_name },
+          {
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: boardId,
+              categories,
+            }),
+          },
+          {
+            type: 'Board',
+            id: boardId,
+          },
+          {
+            type: 'BoardImagesTotal',
+            id: boardId,
+          },
+        ];
       },
     }),
     /**
-     * Change an image's `session_id` association.
+     * Star a list of images.
      */
-    changeImageSessionId: build.mutation<
-      ImageDTO,
-      { imageDTO: ImageDTO; session_id: string }
+    starImages: build.mutation<
+      paths['/api/v1/images/unstar']['post']['responses']['200']['content']['application/json'],
+      { imageDTOs: ImageDTO[] }
     >({
-      query: ({ imageDTO, session_id }) => ({
-        url: `images/${imageDTO.image_name}`,
-        method: 'PATCH',
-        body: { session_id },
+      query: ({ imageDTOs: images }) => ({
+        url: buildImagesUrl('star'),
+        method: 'POST',
+        body: { image_names: images.map((img) => img.image_name) },
       }),
-      invalidatesTags: (result, error, { imageDTO }) => [
-        { type: 'BoardImagesTotal', id: imageDTO.board_id ?? 'none' },
-        { type: 'BoardAssetsTotal', id: imageDTO.board_id ?? 'none' },
-      ],
-      async onQueryStarted(
-        { imageDTO, session_id },
-        { dispatch, queryFulfilled, getState }
-      ) {
-        /**
-         * Cache changes for `changeImageSessionId`:
-         * - *update* getImageDTO
-         */
-
-        // Store patches so we can undo if the query fails
-        const patches: PatchCollection[] = [];
-
-        // *update* getImageDTO
-        patches.push(
-          dispatch(
-            imagesApi.util.updateQueryData(
-              'getImageDTO',
-              imageDTO.image_name,
-              (draft) => {
-                Object.assign(draft, { session_id });
-              }
-            )
-          )
-        );
-
-        try {
-          await queryFulfilled;
-        } catch {
-          patches.forEach((patchResult) => patchResult.undo());
+      invalidatesTags: (result, error, { imageDTOs }) => {
+        // assume all images are on the same board/category
+        if (imageDTOs[0]) {
+          const categories = getCategories(imageDTOs[0]);
+          const boardId = imageDTOs[0].board_id ?? 'none';
+          const tags: ApiTagDescription[] = [
+            {
+              type: 'ImageList',
+              id: getListImagesUrl({
+                board_id: boardId,
+                categories,
+              }),
+            },
+            {
+              type: 'Board',
+              id: boardId,
+            },
+          ];
+          for (const imageDTO of imageDTOs) {
+            tags.push({ type: 'Image', id: imageDTO.image_name });
+          }
+          return tags;
         }
+        return [];
       },
     }),
-    uploadImage: build.mutation<
-      ImageDTO,
-      {
-        file: File;
-        image_category: ImageCategory;
-        is_intermediate: boolean;
-        postUploadAction?: PostUploadAction;
-        session_id?: string;
-        board_id?: string;
-        crop_visible?: boolean;
-      }
+    /**
+     * Unstar a list of images.
+     */
+    unstarImages: build.mutation<
+      paths['/api/v1/images/unstar']['post']['responses']['200']['content']['application/json'],
+      { imageDTOs: ImageDTO[] }
     >({
-      query: ({
-        file,
-        image_category,
-        is_intermediate,
-        session_id,
-        board_id,
-        crop_visible,
-      }) => {
+      query: ({ imageDTOs: images }) => ({
+        url: buildImagesUrl('unstar'),
+        method: 'POST',
+        body: { image_names: images.map((img) => img.image_name) },
+      }),
+      invalidatesTags: (result, error, { imageDTOs }) => {
+        // assume all images are on the same board/category
+        if (imageDTOs[0]) {
+          const categories = getCategories(imageDTOs[0]);
+          const boardId = imageDTOs[0].board_id ?? 'none';
+          const tags: ApiTagDescription[] = [
+            {
+              type: 'ImageList',
+              id: getListImagesUrl({
+                board_id: boardId,
+                categories,
+              }),
+            },
+            {
+              type: 'Board',
+              id: boardId,
+            },
+          ];
+          for (const imageDTO of imageDTOs) {
+            tags.push({ type: 'Image', id: imageDTO.image_name });
+          }
+          return tags;
+        }
+        return [];
+      },
+    }),
+    uploadImage: build.mutation<ImageDTO, UploadImageArg>({
+      query: ({ file, image_category, is_intermediate, session_id, board_id, crop_visible, metadata }) => {
         const formData = new FormData();
         formData.append('file', file);
+        if (metadata) {
+          formData.append('metadata', JSON.stringify(metadata));
+        }
         return {
-          url: `images/`,
+          url: buildImagesUrl('upload'),
           method: 'POST',
           body: formData,
           params: {
             image_category,
             is_intermediate,
             session_id,
-            board_id,
+            board_id: board_id === 'none' ? undefined : board_id,
             crop_visible,
           },
         };
       },
-      async onQueryStarted(
-        {
-          file,
-          image_category,
-          is_intermediate,
-          postUploadAction,
-          session_id,
-          board_id,
-        },
-        { dispatch, queryFulfilled }
-      ) {
-        try {
-          /**
-           * NOTE: PESSIMISTIC UPDATE
-           * Cache changes for `uploadImage`:
-           * - IF the image is an intermediate:
-           *    - BAIL OUT
-           * - *add* to `getImageDTO`
-           * - *add* to no_board/assets
-           */
-
-          const { data: imageDTO } = await queryFulfilled;
-
-          if (imageDTO.is_intermediate) {
-            // Don't add it to anything
-            return;
-          }
-
-          // *add* to `getImageDTO`
-          dispatch(
-            imagesApi.util.upsertQueryData(
-              'getImageDTO',
-              imageDTO.image_name,
-              imageDTO
-            )
-          );
-
-          const categories = getCategories(imageDTO);
-
-          // *add* to no_board/assets
-          dispatch(
-            imagesApi.util.updateQueryData(
-              'listImages',
-              {
-                board_id: imageDTO.board_id ?? 'none',
-                categories,
-              },
-              (draft) => {
-                const oldTotal = draft.total;
-                const newState = imagesAdapter.addOne(draft, imageDTO);
-                const delta = newState.total - oldTotal;
-                draft.total = draft.total + delta;
-              }
-            )
-          );
-
-          dispatch(
-            imagesApi.util.invalidateTags([
-              { type: 'BoardImagesTotal', id: imageDTO.board_id ?? 'none' },
-              { type: 'BoardAssetsTotal', id: imageDTO.board_id ?? 'none' },
-            ])
-          );
-        } catch {
-          // query failed, no action needed
+      invalidatesTags: (result) => {
+        if (!result || result.is_intermediate) {
+          // Don't add it to anything
+          return [];
         }
+        const categories = getCategories(result);
+        const boardId = result.board_id ?? 'none';
+
+        return [
+          {
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: boardId,
+              categories,
+            }),
+          },
+          {
+            type: 'Board',
+            id: boardId,
+          },
+          {
+            type: 'BoardImagesTotal',
+            id: boardId,
+          },
+        ];
       },
     }),
-    addImageToBoard: build.mutation<
-      void,
-      { board_id: BoardId; imageDTO: ImageDTO }
-    >({
+
+    deleteBoard: build.mutation<DeleteBoardResult, string>({
+      query: (board_id) => ({ url: buildBoardsUrl(board_id), method: 'DELETE' }),
+      invalidatesTags: () => [
+        { type: 'Board', id: LIST_TAG },
+        // invalidate the 'No Board' cache
+        {
+          type: 'ImageList',
+          id: getListImagesUrl({
+            board_id: 'none',
+            categories: IMAGE_CATEGORIES,
+          }),
+        },
+        {
+          type: 'ImageList',
+          id: getListImagesUrl({
+            board_id: 'none',
+            categories: ASSETS_CATEGORIES,
+          }),
+        },
+      ],
+    }),
+
+    deleteBoardAndImages: build.mutation<DeleteBoardResult, string>({
+      query: (board_id) => ({
+        url: buildBoardsUrl(board_id),
+        method: 'DELETE',
+        params: { include_images: true },
+      }),
+      invalidatesTags: () => [{ type: 'Board', id: LIST_TAG }],
+    }),
+    addImageToBoard: build.mutation<void, { board_id: BoardId; imageDTO: ImageDTO }>({
       query: ({ board_id, imageDTO }) => {
         const { image_name } = imageDTO;
         return {
-          url: `board_images/`,
+          url: buildBoardImagesUrl(),
           method: 'POST',
           body: { board_id, image_name },
         };
       },
-      invalidatesTags: (result, error, { board_id, imageDTO }) => [
-        { type: 'Board', id: board_id },
-        { type: 'BoardImagesTotal', id: board_id },
-        { type: 'BoardImagesTotal', id: imageDTO.board_id ?? 'none' },
-        { type: 'BoardAssetsTotal', id: board_id },
-        { type: 'BoardAssetsTotal', id: imageDTO.board_id ?? 'none' },
-      ],
-      async onQueryStarted(
-        { board_id, imageDTO },
-        { dispatch, queryFulfilled, getState }
-      ) {
-        /**
-         * Cache changes for `addImageToBoard`:
-         * - *update* getImageDTO
-         * - IF it is intermediate:
-         *    - BAIL OUT ON FURTHER CHANGES
-         * - IF it has an old board_id:
-         *    - THEN *remove* from old board_id/[images|assets]
-         *    - ELSE *remove* from no_board/[images|assets]
-         * - $cache = board_id/[images|assets]
-         * - IF it eligible for insertion into existing $cache:
-         *    - THEN *add* to $cache
-         */
-
-        const patches: PatchCollection[] = [];
-        const categories = getCategories(imageDTO);
-
-        // *update* getImageDTO
-        patches.push(
-          dispatch(
-            imagesApi.util.updateQueryData(
-              'getImageDTO',
-              imageDTO.image_name,
-              (draft) => {
-                Object.assign(draft, { board_id });
-              }
-            )
-          )
-        );
-
-        if (!imageDTO.is_intermediate) {
-          // *remove* from [no_board|board_id]/[images|assets]
-          patches.push(
-            dispatch(
-              imagesApi.util.updateQueryData(
-                'listImages',
-                {
-                  board_id: imageDTO.board_id ?? 'none',
-                  categories,
-                },
-                (draft) => {
-                  const oldTotal = draft.total;
-                  const newState = imagesAdapter.removeOne(
-                    draft,
-                    imageDTO.image_name
-                  );
-                  const delta = newState.total - oldTotal;
-                  draft.total = draft.total + delta;
-                }
-              )
-            )
-          );
-
-          // $cache = board_id/[images|assets]
-          const queryArgs = { board_id: board_id ?? 'none', categories };
-          const currentCache = imagesApi.endpoints.listImages.select(queryArgs)(
-            getState()
-          );
-
-          // IF it eligible for insertion into existing $cache
-          // "eligible" means either:
-          // - The cache is fully populated, with all images in the db cached
-          //    OR
-          // - The image's `created_at` is within the range of the cached images
-
-          const isCacheFullyPopulated =
-            currentCache.data &&
-            currentCache.data.ids.length >= currentCache.data.total;
-
-          const isInDateRange = getIsImageInDateRange(
-            currentCache.data,
-            imageDTO
-          );
-
-          if (isCacheFullyPopulated || isInDateRange) {
-            // THEN *add* to $cache
-            patches.push(
-              dispatch(
-                imagesApi.util.updateQueryData(
-                  'listImages',
-                  queryArgs,
-                  (draft) => {
-                    const oldTotal = draft.total;
-                    const newState = imagesAdapter.addOne(draft, imageDTO);
-                    const delta = newState.total - oldTotal;
-                    draft.total = draft.total + delta;
-                  }
-                )
-              )
-            );
-          }
-        }
-
-        try {
-          await queryFulfilled;
-        } catch {
-          patches.forEach((patchResult) => patchResult.undo());
-        }
+      invalidatesTags: (result, error, { board_id, imageDTO }) => {
+        return [
+          { type: 'Image', id: imageDTO.image_name },
+          {
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id,
+              categories: getCategories(imageDTO),
+            }),
+          },
+          {
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: imageDTO.board_id ?? 'none',
+              categories: getCategories(imageDTO),
+            }),
+          },
+          { type: 'Board', id: board_id },
+          { type: 'Board', id: imageDTO.board_id ?? 'none' },
+          {
+            type: 'BoardImagesTotal',
+            id: imageDTO.board_id ?? 'none',
+          },
+          {
+            type: 'BoardImagesTotal',
+            id: board_id,
+          },
+        ];
       },
     }),
     removeImageFromBoard: build.mutation<void, { imageDTO: ImageDTO }>({
       query: ({ imageDTO }) => {
-        const { board_id, image_name } = imageDTO;
+        const { image_name } = imageDTO;
         return {
-          url: `board_images/`,
+          url: buildBoardImagesUrl(),
           method: 'DELETE',
-          body: { board_id, image_name },
+          body: { image_name },
         };
       },
-      invalidatesTags: (result, error, { imageDTO }) => [
-        { type: 'Board', id: imageDTO.board_id },
-        { type: 'BoardImagesTotal', id: imageDTO.board_id },
-        { type: 'BoardImagesTotal', id: 'none' },
-        { type: 'BoardAssetsTotal', id: imageDTO.board_id },
-        { type: 'BoardAssetsTotal', id: 'none' },
-      ],
-      async onQueryStarted(
-        { imageDTO },
-        { dispatch, queryFulfilled, getState }
-      ) {
-        /**
-         * Cache changes for removeImageFromBoard:
-         * - *update* getImageDTO
-         * - *remove* from board_id/[images|assets]
-         * - $cache = no_board/[images|assets]
-         * - IF it eligible for insertion into existing $cache:
-         *    - THEN *upsert* to $cache
-         */
-
-        const categories = getCategories(imageDTO);
-        const patches: PatchCollection[] = [];
-
-        // *update* getImageDTO
-        patches.push(
-          dispatch(
-            imagesApi.util.updateQueryData(
-              'getImageDTO',
-              imageDTO.image_name,
-              (draft) => {
-                Object.assign(draft, { board_id: undefined });
-              }
-            )
-          )
-        );
-
-        // *remove* from board_id/[images|assets]
-        patches.push(
-          dispatch(
-            imagesApi.util.updateQueryData(
-              'listImages',
-              {
-                board_id: imageDTO.board_id ?? 'none',
-                categories,
-              },
-              (draft) => {
-                const oldTotal = draft.total;
-                const newState = imagesAdapter.removeOne(
-                  draft,
-                  imageDTO.image_name
-                );
-                const delta = newState.total - oldTotal;
-                draft.total = draft.total + delta;
-              }
-            )
-          )
-        );
-
-        // $cache = no_board/[images|assets]
-        const queryArgs = { board_id: 'none', categories };
-        const currentCache = imagesApi.endpoints.listImages.select(queryArgs)(
-          getState()
-        );
-
-        // IF it eligible for insertion into existing $cache
-        // "eligible" means either:
-        // - The cache is fully populated, with all images in the db cached
-        //    OR
-        // - The image's `created_at` is within the range of the cached images
-
-        const isCacheFullyPopulated =
-          currentCache.data &&
-          currentCache.data.ids.length >= currentCache.data.total;
-
-        const isInDateRange = getIsImageInDateRange(
-          currentCache.data,
-          imageDTO
-        );
-
-        if (isCacheFullyPopulated || isInDateRange) {
-          // THEN *upsert* to $cache
-          patches.push(
-            dispatch(
-              imagesApi.util.updateQueryData(
-                'listImages',
-                queryArgs,
-                (draft) => {
-                  const oldTotal = draft.total;
-                  const newState = imagesAdapter.upsertOne(draft, imageDTO);
-                  const delta = newState.total - oldTotal;
-                  draft.total = draft.total + delta;
-                }
-              )
-            )
-          );
-        }
-
-        try {
-          await queryFulfilled;
-        } catch {
-          patches.forEach((patchResult) => patchResult.undo());
-        }
+      invalidatesTags: (result, error, { imageDTO }) => {
+        return [
+          { type: 'Image', id: imageDTO.image_name },
+          {
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: imageDTO.board_id,
+              categories: getCategories(imageDTO),
+            }),
+          },
+          {
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: 'none',
+              categories: getCategories(imageDTO),
+            }),
+          },
+          { type: 'Board', id: imageDTO.board_id ?? 'none' },
+          { type: 'Board', id: 'none' },
+          {
+            type: 'BoardImagesTotal',
+            id: imageDTO.board_id ?? 'none',
+          },
+          { type: 'BoardImagesTotal', id: 'none' },
+        ];
       },
+    }),
+    addImagesToBoard: build.mutation<
+      components['schemas']['AddImagesToBoardResult'],
+      {
+        board_id: string;
+        imageDTOs: ImageDTO[];
+      }
+    >({
+      query: ({ board_id, imageDTOs }) => ({
+        url: buildBoardImagesUrl('batch'),
+        method: 'POST',
+        body: {
+          image_names: imageDTOs.map((i) => i.image_name),
+          board_id,
+        },
+      }),
+      invalidatesTags: (result, error, { board_id, imageDTOs }) => {
+        const tags: ApiTagDescription[] = [];
+        if (imageDTOs[0]) {
+          tags.push({
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: imageDTOs[0].board_id ?? 'none',
+              categories: getCategories(imageDTOs[0]),
+            }),
+          });
+          tags.push({
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: board_id,
+              categories: getCategories(imageDTOs[0]),
+            }),
+          });
+          tags.push({ type: 'Board', id: imageDTOs[0].board_id ?? 'none' });
+          tags.push({
+            type: 'BoardImagesTotal',
+            id: imageDTOs[0].board_id ?? 'none',
+          });
+        }
+        for (const imageDTO of imageDTOs) {
+          tags.push({ type: 'Image', id: imageDTO.image_name });
+        }
+        tags.push({ type: 'Board', id: board_id });
+        tags.push({
+          type: 'BoardImagesTotal',
+          id: board_id ?? 'none',
+        });
+        return tags;
+      },
+    }),
+    removeImagesFromBoard: build.mutation<
+      components['schemas']['RemoveImagesFromBoardResult'],
+      {
+        imageDTOs: ImageDTO[];
+      }
+    >({
+      query: ({ imageDTOs }) => ({
+        url: buildBoardImagesUrl('batch/delete'),
+        method: 'POST',
+        body: {
+          image_names: imageDTOs.map((i) => i.image_name),
+        },
+      }),
+      invalidatesTags: (result, error, { imageDTOs }) => {
+        const touchedBoardIds: string[] = [];
+        const tags: ApiTagDescription[] = [];
+
+        if (imageDTOs[0]) {
+          tags.push({
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: imageDTOs[0].board_id,
+              categories: getCategories(imageDTOs[0]),
+            }),
+          });
+          tags.push({
+            type: 'ImageList',
+            id: getListImagesUrl({
+              board_id: 'none',
+              categories: getCategories(imageDTOs[0]),
+            }),
+          });
+          tags.push({
+            type: 'BoardImagesTotal',
+            id: 'none',
+          });
+        }
+
+        result?.removed_image_names.forEach((image_name) => {
+          const board_id = imageDTOs.find((i) => i.image_name === image_name)?.board_id;
+
+          if (!board_id || touchedBoardIds.includes(board_id)) {
+            tags.push({ type: 'Board', id: 'none' });
+            return;
+          }
+          tags.push({ type: 'Image', id: image_name });
+          tags.push({ type: 'Board', id: board_id });
+          tags.push({
+            type: 'BoardImagesTotal',
+            id: board_id ?? 'none',
+          });
+        });
+
+        return tags;
+      },
+    }),
+    bulkDownloadImages: build.mutation<
+      components['schemas']['ImagesDownloaded'],
+      components['schemas']['Body_download_images_from_list']
+    >({
+      query: ({ image_names, board_id }) => ({
+        url: buildImagesUrl('download'),
+        method: 'POST',
+        body: {
+          image_names,
+          board_id,
+        },
+      }),
     }),
   }),
 });
@@ -784,14 +538,107 @@ export const imagesApi = api.injectEndpoints({
 export const {
   useGetIntermediatesCountQuery,
   useListImagesQuery,
-  useLazyListImagesQuery,
   useGetImageDTOQuery,
   useGetImageMetadataQuery,
-  useDeleteImageMutation,
-  useGetBoardImagesTotalQuery,
-  useGetBoardAssetsTotalQuery,
+  useGetImageWorkflowQuery,
+  useLazyGetImageWorkflowQuery,
   useUploadImageMutation,
-  useAddImageToBoardMutation,
-  useRemoveImageFromBoardMutation,
   useClearIntermediatesMutation,
+  useAddImagesToBoardMutation,
+  useRemoveImagesFromBoardMutation,
+  useDeleteBoardAndImagesMutation,
+  useDeleteBoardMutation,
+  useStarImagesMutation,
+  useUnstarImagesMutation,
+  useBulkDownloadImagesMutation,
 } = imagesApi;
+
+/**
+ * Imperative RTKQ helper to fetch an ImageDTO.
+ * @param image_name The name of the image to fetch
+ * @param options The options for the query. By default, the query will not subscribe to the store.
+ * @returns The ImageDTO if found, otherwise null
+ */
+export const getImageDTOSafe = async (
+  image_name: string,
+  options?: StartQueryActionCreatorOptions
+): Promise<ImageDTO | null> => {
+  const _options = {
+    subscribe: false,
+    ...options,
+  };
+  const req = getStore().dispatch(imagesApi.endpoints.getImageDTO.initiate(image_name, _options));
+  try {
+    return await req.unwrap();
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Imperative RTKQ helper to fetch an ImageDTO.
+ * @param image_name The name of the image to fetch
+ * @param options The options for the query. By default, the query will not subscribe to the store.
+ * @raises Error if the image is not found or there is an error fetching the image
+ */
+export const getImageDTO = (image_name: string, options?: StartQueryActionCreatorOptions): Promise<ImageDTO> => {
+  const _options = {
+    subscribe: false,
+    ...options,
+  };
+  const req = getStore().dispatch(imagesApi.endpoints.getImageDTO.initiate(image_name, _options));
+  return req.unwrap();
+};
+
+/**
+ * Imperative RTKQ helper to fetch an image's metadata.
+ * @param image_name The name of the image
+ * @param options The options for the query. By default, the query will not subscribe to the store.
+ * @raises Error if the image metadata is not found or there is an error fetching the image metadata. Images without
+ * metadata will return undefined.
+ */
+export const getImageMetadata = (
+  image_name: string,
+  options?: StartQueryActionCreatorOptions
+): Promise<JsonObject | undefined> => {
+  const _options = {
+    subscribe: false,
+    ...options,
+  };
+  const req = getStore().dispatch(imagesApi.endpoints.getImageMetadata.initiate(image_name, _options));
+  return req.unwrap();
+};
+
+export const uploadImage = (arg: UploadImageArg): Promise<ImageDTO> => {
+  const { dispatch } = getStore();
+  const req = dispatch(imagesApi.endpoints.uploadImage.initiate(arg, { track: false }));
+  return req.unwrap();
+};
+
+export const uploadImages = async (args: UploadImageArg[]): Promise<ImageDTO[]> => {
+  const { dispatch } = getStore();
+  const results = await Promise.allSettled(
+    args.map((arg) => {
+      const req = dispatch(imagesApi.endpoints.uploadImage.initiate(arg, { track: false }));
+      return req.unwrap();
+    })
+  );
+  return results.filter((r): r is PromiseFulfilledResult<ImageDTO> => r.status === 'fulfilled').map((r) => r.value);
+};
+
+/**
+ * Convert an ImageDTO to a File by downloading the image from the server.
+ * @param imageDTO The image to download and convert to a File
+ */
+export const imageDTOToFile = async (imageDTO: ImageDTO): Promise<File> => {
+  const init: RequestInit = {};
+  const authToken = $authToken.get();
+  if (authToken) {
+    init.headers = { Authorization: `Bearer ${authToken}` };
+  }
+  const res = await fetch(imageDTO.image_url, init);
+  const blob = await res.blob();
+  // Create a new file with the same name, which we will upload
+  const file = new File([blob], `copy_of_${imageDTO.image_name}`, { type: 'image/png' });
+  return file;
+};

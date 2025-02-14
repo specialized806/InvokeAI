@@ -1,47 +1,26 @@
-import { CloseIcon } from '@chakra-ui/icons';
-import {
-  IconButton,
-  Input,
-  InputGroup,
-  InputRightElement,
-} from '@chakra-ui/react';
-import { createSelector } from '@reduxjs/toolkit';
-import { stateSelector } from 'app/store/store';
+import { IconButton, Input, InputGroup, InputRightElement } from '@invoke-ai/ui-library';
 import { useAppDispatch, useAppSelector } from 'app/store/storeHooks';
-import { defaultSelectorOptions } from 'app/store/util/defaultMemoizeOptions';
-import { setBoardSearchText } from 'features/gallery/store/boardSlice';
-import {
-  ChangeEvent,
-  KeyboardEvent,
-  memo,
-  useCallback,
-  useEffect,
-  useRef,
-} from 'react';
-
-const selector = createSelector(
-  [stateSelector],
-  ({ boards }) => {
-    const { searchText } = boards;
-    return { searchText };
-  },
-  defaultSelectorOptions
-);
+import { selectBoardSearchText } from 'features/gallery/store/gallerySelectors';
+import { boardSearchTextChanged } from 'features/gallery/store/gallerySlice';
+import type { ChangeEvent, KeyboardEvent } from 'react';
+import { memo, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import { PiXBold } from 'react-icons/pi';
 
 const BoardsSearch = () => {
   const dispatch = useAppDispatch();
-  const { searchText } = useAppSelector(selector);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const boardSearchText = useAppSelector(selectBoardSearchText);
+  const { t } = useTranslation();
 
   const handleBoardSearch = useCallback(
     (searchTerm: string) => {
-      dispatch(setBoardSearchText(searchTerm));
+      dispatch(boardSearchTextChanged(searchTerm));
     },
     [dispatch]
   );
 
   const clearBoardSearch = useCallback(() => {
-    dispatch(setBoardSearchText(''));
+    dispatch(boardSearchTextChanged(''));
   }, [dispatch]);
 
   const handleKeydown = useCallback(
@@ -61,32 +40,23 @@ const BoardsSearch = () => {
     [handleBoardSearch]
   );
 
-  useEffect(() => {
-    // focus the search box on mount
-    if (!inputRef.current) {
-      return;
-    }
-    inputRef.current.focus();
-  }, []);
-
   return (
     <InputGroup>
       <Input
-        ref={inputRef}
-        placeholder="Search Boards..."
-        value={searchText}
+        placeholder={t('boards.searchBoard')}
+        value={boardSearchText}
         onKeyDown={handleKeydown}
         onChange={handleChange}
+        data-testid="board-search-input"
       />
-      {searchText && searchText.length && (
-        <InputRightElement>
+      {boardSearchText && boardSearchText.length && (
+        <InputRightElement h="full" pe={2}>
           <IconButton
             onClick={clearBoardSearch}
-            size="xs"
-            variant="ghost"
-            aria-label="Clear Search"
-            opacity={0.5}
-            icon={<CloseIcon boxSize={2} />}
+            size="sm"
+            variant="link"
+            aria-label={t('boards.clearSearch')}
+            icon={<PiXBold />}
           />
         </InputRightElement>
       )}

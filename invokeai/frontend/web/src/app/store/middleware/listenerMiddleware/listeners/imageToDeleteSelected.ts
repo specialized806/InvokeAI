@@ -1,37 +1,32 @@
-import { imageDeletionConfirmed } from 'features/imageDeletion/store/actions';
-import { selectImageUsage } from 'features/imageDeletion/store/imageDeletionSelectors';
-import {
-  imageToDeleteSelected,
-  isModalOpenChanged,
-} from 'features/imageDeletion/store/imageDeletionSlice';
-import { startAppListening } from '..';
+import type { AppStartListening } from 'app/store/middleware/listenerMiddleware';
+import { imageDeletionConfirmed } from 'features/deleteImageModal/store/actions';
+import { selectImageUsage } from 'features/deleteImageModal/store/selectors';
+import { imagesToDeleteSelected, isModalOpenChanged } from 'features/deleteImageModal/store/slice';
 
-export const addImageToDeleteSelectedListener = () => {
+export const addImageToDeleteSelectedListener = (startAppListening: AppStartListening) => {
   startAppListening({
-    actionCreator: imageToDeleteSelected,
-    effect: async (action, { dispatch, getState }) => {
-      const imageDTO = action.payload;
+    actionCreator: imagesToDeleteSelected,
+    effect: (action, { dispatch, getState }) => {
+      const imageDTOs = action.payload;
       const state = getState();
       const { shouldConfirmOnDelete } = state.system;
-      const imageUsage = selectImageUsage(getState());
-
-      if (!imageUsage) {
-        // should never happen
-        return;
-      }
+      const imagesUsage = selectImageUsage(getState());
 
       const isImageInUse =
-        imageUsage.isCanvasImage ||
-        imageUsage.isInitialImage ||
-        imageUsage.isControlNetImage ||
-        imageUsage.isNodesImage;
+        imagesUsage.some((i) => i.isRasterLayerImage) ||
+        imagesUsage.some((i) => i.isControlLayerImage) ||
+        imagesUsage.some((i) => i.isReferenceImage) ||
+        imagesUsage.some((i) => i.isInpaintMaskImage) ||
+        imagesUsage.some((i) => i.isUpscaleImage) ||
+        imagesUsage.some((i) => i.isNodesImage) ||
+        imagesUsage.some((i) => i.isRegionalGuidanceImage);
 
       if (shouldConfirmOnDelete || isImageInUse) {
         dispatch(isModalOpenChanged(true));
         return;
       }
 
-      dispatch(imageDeletionConfirmed({ imageDTO, imageUsage }));
+      dispatch(imageDeletionConfirmed({ imageDTOs, imagesUsage }));
     },
   });
 };

@@ -1,62 +1,37 @@
-import { Update } from '@reduxjs/toolkit';
-import {
-  ASSETS_CATEGORIES,
-  IMAGE_CATEGORIES,
-} from 'features/gallery/store/types';
-import {
+import { ASSETS_CATEGORIES, IMAGE_CATEGORIES } from 'features/gallery/store/types';
+import type {
   BoardDTO,
-  ImageDTO,
-  OffsetPaginatedResults_BoardDTO_,
+  CreateBoardArg,
+  ListBoardsArgs,
+  OffsetPaginatedResults_ImageDTO_,
+  UpdateBoardArg,
 } from 'services/api/types';
-import { ApiFullTagDescription, LIST_TAG, api } from '..';
-import { paths } from '../schema';
-import { getListImagesUrl, imagesAdapter, imagesApi } from './images';
+import { getListImagesUrl } from 'services/api/util';
 
-type ListBoardsArg = NonNullable<
-  paths['/api/v1/boards/']['get']['parameters']['query']
->;
+import type { ApiTagDescription } from '..';
+import { api, buildV1Url, LIST_TAG } from '..';
 
-type UpdateBoardArg =
-  paths['/api/v1/boards/{board_id}']['patch']['parameters']['path'] & {
-    changes: paths['/api/v1/boards/{board_id}']['patch']['requestBody']['content']['application/json'];
-  };
-
-type DeleteBoardResult =
-  paths['/api/v1/boards/{board_id}']['delete']['responses']['200']['content']['application/json'];
+/**
+ * Builds an endpoint URL for the boards router
+ * @example
+ * buildBoardsUrl('some-path')
+ * // '/api/v1/boards/some-path'
+ */
+export const buildBoardsUrl = (path: string = '') => buildV1Url(`boards/${path}`);
 
 export const boardsApi = api.injectEndpoints({
   endpoints: (build) => ({
     /**
      * Boards Queries
      */
-    listBoards: build.query<OffsetPaginatedResults_BoardDTO_, ListBoardsArg>({
-      query: (arg) => ({ url: 'boards/', params: arg }),
-      providesTags: (result, error, arg) => {
-        // any list of boards
-        const tags: ApiFullTagDescription[] = [{ type: 'Board', id: LIST_TAG }];
-
-        if (result) {
-          // and individual tags for each board
-          tags.push(
-            ...result.items.map(({ board_id }) => ({
-              type: 'Board' as const,
-              id: board_id,
-            }))
-          );
-        }
-
-        return tags;
-      },
-    }),
-
-    listAllBoards: build.query<Array<BoardDTO>, void>({
-      query: () => ({
-        url: 'boards/',
-        params: { all: true },
+    listAllBoards: build.query<Array<BoardDTO>, ListBoardsArgs>({
+      query: (args) => ({
+        url: buildBoardsUrl(),
+        params: { all: true, ...args },
       }),
-      providesTags: (result, error, arg) => {
+      providesTags: (result) => {
         // any list of boards
-        const tags: ApiFullTagDescription[] = [{ type: 'Board', id: LIST_TAG }];
+        const tags: ApiTagDescription[] = [{ type: 'Board', id: LIST_TAG }, 'FetchOnReconnect'];
 
         if (result) {
           // and individual tags for each board
@@ -74,207 +49,84 @@ export const boardsApi = api.injectEndpoints({
 
     listAllImageNamesForBoard: build.query<Array<string>, string>({
       query: (board_id) => ({
-        url: `boards/${board_id}/image_names`,
+        url: buildBoardsUrl(`${board_id}/image_names`),
       }),
-      providesTags: (result, error, arg) => [
-        { type: 'ImageNameList', id: arg },
-      ],
+      providesTags: (result, error, arg) => [{ type: 'ImageNameList', id: arg }, 'FetchOnReconnect'],
       keepUnusedDataFor: 0,
+    }),
+
+    getBoardImagesTotal: build.query<{ total: number }, string | undefined>({
+      query: (board_id) => ({
+        url: getListImagesUrl({
+          board_id: board_id ?? 'none',
+          categories: IMAGE_CATEGORIES,
+          is_intermediate: false,
+          limit: 0,
+          offset: 0,
+        }),
+        method: 'GET',
+      }),
+      providesTags: (result, error, arg) => [{ type: 'BoardImagesTotal', id: arg ?? 'none' }, 'FetchOnReconnect'],
+      transformResponse: (response: OffsetPaginatedResults_ImageDTO_) => {
+        return { total: response.total };
+      },
+    }),
+
+    getBoardAssetsTotal: build.query<{ total: number }, string | undefined>({
+      query: (board_id) => ({
+        url: getListImagesUrl({
+          board_id: board_id ?? 'none',
+          categories: ASSETS_CATEGORIES,
+          is_intermediate: false,
+          limit: 0,
+          offset: 0,
+        }),
+        method: 'GET',
+      }),
+      providesTags: (result, error, arg) => [{ type: 'BoardAssetsTotal', id: arg ?? 'none' }, 'FetchOnReconnect'],
+      transformResponse: (response: OffsetPaginatedResults_ImageDTO_) => {
+        return { total: response.total };
+      },
     }),
 
     /**
      * Boards Mutations
      */
 
-    createBoard: build.mutation<BoardDTO, string>({
-      query: (board_name) => ({
-        url: `boards/`,
+    createBoard: build.mutation<BoardDTO, CreateBoardArg>({
+      query: ({ board_name, is_private }) => ({
+        url: buildBoardsUrl(),
         method: 'POST',
-        params: { board_name },
+        params: { board_name, is_private },
       }),
       invalidatesTags: [{ type: 'Board', id: LIST_TAG }],
     }),
 
     updateBoard: build.mutation<BoardDTO, UpdateBoardArg>({
       query: ({ board_id, changes }) => ({
-        url: `boards/${board_id}`,
+        url: buildBoardsUrl(board_id),
         method: 'PATCH',
         body: changes,
       }),
-      invalidatesTags: (result, error, arg) => [
-        { type: 'Board', id: arg.board_id },
-      ],
-    }),
-
-    deleteBoard: build.mutation<DeleteBoardResult, string>({
-      query: (board_id) => ({ url: `boards/${board_id}`, method: 'DELETE' }),
-      invalidatesTags: (result, error, board_id) => [
-        { type: 'Board', id: LIST_TAG },
-        // invalidate the 'No Board' cache
-        {
-          type: 'ImageList',
-          id: getListImagesUrl({
-            board_id: 'none',
-            categories: IMAGE_CATEGORIES,
-          }),
-        },
-        {
-          type: 'ImageList',
-          id: getListImagesUrl({
-            board_id: 'none',
-            categories: ASSETS_CATEGORIES,
-          }),
-        },
-        { type: 'BoardImagesTotal', id: 'none' },
-        { type: 'BoardAssetsTotal', id: 'none' },
-      ],
-      async onQueryStarted(board_id, { dispatch, queryFulfilled, getState }) {
-        /**
-         * Cache changes for deleteBoard:
-         * - Update every image in the 'getImageDTO' cache that has the board_id
-         * - Update every image in the 'All Images' cache that has the board_id
-         * - Update every image in the 'All Assets' cache that has the board_id
-         * - Invalidate the 'No Board' cache:
-         *   Ideally we'd be able to insert all deleted images into the cache, but we don't
-         *   have access to the deleted images DTOs - only the names, and a network request
-         *   for all of a board's DTOs could be very large. Instead, we invalidate the 'No Board'
-         *   cache.
-         */
-
-        try {
-          const { data } = await queryFulfilled;
-          const { deleted_board_images } = data;
-
-          // update getImageDTO caches
-          deleted_board_images.forEach((image_id) => {
-            dispatch(
-              imagesApi.util.updateQueryData(
-                'getImageDTO',
-                image_id,
-                (draft) => {
-                  draft.board_id = undefined;
-                }
-              )
-            );
-          });
-
-          // update 'All Images' & 'All Assets' caches
-          const queryArgsToUpdate = [
-            {
-              categories: IMAGE_CATEGORIES,
-            },
-            {
-              categories: ASSETS_CATEGORIES,
-            },
-          ];
-
-          const updates: Update<ImageDTO>[] = deleted_board_images.map(
-            (image_name) => ({
-              id: image_name,
-              changes: { board_id: undefined },
-            })
-          );
-
-          queryArgsToUpdate.forEach((queryArgs) => {
-            dispatch(
-              imagesApi.util.updateQueryData(
-                'listImages',
-                queryArgs,
-                (draft) => {
-                  const oldTotal = draft.total;
-                  const newState = imagesAdapter.updateMany(draft, updates);
-                  const delta = newState.total - oldTotal;
-                  draft.total = draft.total + delta;
-                }
-              )
-            );
-          });
-        } catch {
-          //no-op
+      invalidatesTags: (result, error, arg) => {
+        const tags: ApiTagDescription[] = [];
+        if (Object.keys(arg.changes).includes('archived')) {
+          tags.push({ type: 'Board', id: LIST_TAG });
         }
-      },
-    }),
 
-    deleteBoardAndImages: build.mutation<DeleteBoardResult, string>({
-      query: (board_id) => ({
-        url: `boards/${board_id}`,
-        method: 'DELETE',
-        params: { include_images: true },
-      }),
-      invalidatesTags: (result, error, board_id) => [
-        { type: 'Board', id: LIST_TAG },
-        {
-          type: 'ImageList',
-          id: getListImagesUrl({
-            board_id: 'none',
-            categories: IMAGE_CATEGORIES,
-          }),
-        },
-        {
-          type: 'ImageList',
-          id: getListImagesUrl({
-            board_id: 'none',
-            categories: ASSETS_CATEGORIES,
-          }),
-        },
-        { type: 'BoardImagesTotal', id: 'none' },
-        { type: 'BoardAssetsTotal', id: 'none' },
-      ],
-      async onQueryStarted(board_id, { dispatch, queryFulfilled, getState }) {
-        /**
-         * Cache changes for deleteBoardAndImages:
-         * - ~~Remove every image in the 'getImageDTO' cache that has the board_id~~
-         *   This isn't actually possible, you cannot remove cache entries with RTK Query.
-         *   Instead, we rely on the UI to remove all components that use the deleted images.
-         * - Remove every image in the 'All Images' cache that has the board_id
-         * - Remove every image in the 'All Assets' cache that has the board_id
-         */
+        tags.push({ type: 'Board', id: arg.board_id });
 
-        try {
-          const { data } = await queryFulfilled;
-          const { deleted_images } = data;
-
-          // update 'All Images' & 'All Assets' caches
-          const queryArgsToUpdate = [
-            {
-              categories: IMAGE_CATEGORIES,
-            },
-            {
-              categories: ASSETS_CATEGORIES,
-            },
-          ];
-
-          queryArgsToUpdate.forEach((queryArgs) => {
-            dispatch(
-              imagesApi.util.updateQueryData(
-                'listImages',
-                queryArgs,
-                (draft) => {
-                  const oldTotal = draft.total;
-                  const newState = imagesAdapter.removeMany(
-                    draft,
-                    deleted_images
-                  );
-                  const delta = newState.total - oldTotal;
-                  draft.total = draft.total + delta;
-                }
-              )
-            );
-          });
-        } catch {
-          //no-op
-        }
+        return tags;
       },
     }),
   }),
 });
 
 export const {
-  useListBoardsQuery,
   useListAllBoardsQuery,
+  useGetBoardImagesTotalQuery,
+  useGetBoardAssetsTotalQuery,
   useCreateBoardMutation,
   useUpdateBoardMutation,
-  useDeleteBoardMutation,
-  useDeleteBoardAndImagesMutation,
   useListAllImageNamesForBoardQuery,
 } = boardsApi;
